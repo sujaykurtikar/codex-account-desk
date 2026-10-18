@@ -12,9 +12,11 @@ const DATA = resolve(process.env.ACCOUNT_DESK_DATA || join(homedir(), '.local/sh
 const PORT = Number(process.env.PORT || 4317);
 import { existsSync } from 'node:fs';
 
-const defaultCodex = existsSync('/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex')
-  ? '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'
-  : 'codex';
+const defaultCodex = existsSync(join(ROOT, 'node_modules/.bin/codex'))
+  ? join(ROOT, 'node_modules/.bin/codex')
+  : (existsSync('/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex')
+    ? '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'
+    : 'codex');
 const CODEX = process.env.CODEX_BIN || defaultCodex;
 const PRODUCTION = process.env.NODE_ENV === 'production';
 const ACCESS_PASSWORD = process.env.DASHBOARD_PASSWORD || '';
