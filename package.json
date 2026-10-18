@@ -1,0 +1,16 @@
+{
+  "name": "codex-account-desk",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:browser": "node --test test/browser-smoke.mjs"
+  },
+  "dependencies": {
+    "@openai/codex": "0.163.0"
+  }
+}

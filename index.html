@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f7f6">
+  <title>Account Desk</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="logic.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main class="access-gate" id="accessGate" hidden>
+    <div class="gate-brand"><span class="brand-mark" aria-hidden="true">A</span><span>Account Desk</span></div>
+    <h1>Shared workspace</h1>
+    <p>Sign in with your group password to see the shared account list.</p>
+    <form id="accessForm"><label class="field">Group password<input type="password" name="password" autocomplete="current-password" required></label><button class="button button-primary" type="submit">Sign in</button><p class="dialog-error" id="accessError" role="alert"></p></form>
+  </main>
+  <div class="shell" id="dashboardShell" hidden>
+    <header class="topbar">
+      <a class="brand" href="#top" aria-label="Account Desk home"><span class="brand-mark" aria-hidden="true">A</span><span>Account Desk</span></a>
+      <div class="top-actions"><span class="connection" title="Connection mode"><i class="connection-dot" id="connectionDot"></i><span id="modeLabel">Connecting</span></span><button class="button button-quiet" id="backupButton" type="button">Export snapshot</button><button class="button button-quiet" id="logoutButton" type="button" hidden>Log out</button></div>
+    </header>
+
+    <main id="top">
+      <section class="page-heading"><div><p class="eyebrow">SHARED WORKSPACE</p><h1>Overview</h1></div><div class="heading-actions"><button class="button" id="refreshButton" type="button">Refresh all</button><button class="button button-primary" id="addButton" type="button">Add account</button></div></section>
+
+      <section class="summary-grid" aria-label="Account summary">
+        <div class="summary"><span class="summary-label">Accounts</span><strong id="accountCount">--</strong><span class="summary-detail" id="accountDetail">Configured accounts</span></div>
+        <div class="summary"><span class="summary-label">Ready to use</span><strong id="readyCount">--</strong><span class="summary-detail">Above reserve, fresh data</span></div>
+        <div class="summary"><span class="summary-label">Next reset</span><strong id="nextReset">--</strong><span class="summary-detail" id="nextResetDetail">No reset scheduled</span></div>
+      </section>
+
+      <section class="recommendation" aria-labelledby="recommendTitle">
+        <div class="recommend-copy"><span class="recommend-tag"><span class="recommend-spark" aria-hidden="true">✳</span> RECOMMENDED</span><h2 id="recommendTitle">Choose an account with room to work</h2><p id="recommendReason">Fresh quota data and your reserve settings determine the best available account.</p></div>
+        <div class="recommend-target" id="recommendTarget"><span class="muted">No account recommended</span></div>
+        <button class="button button-dark" id="useRecommended" type="button" disabled>Mark in use</button>
+      </section>
+
+      <section class="content-section" aria-labelledby="accountsTitle">
+        <div class="section-head"><div><h2 id="accountsTitle">Accounts</h2><p class="section-subtitle">Usage snapshots and account status</p></div><label class="search-wrap"><span class="sr-only">Search accounts</span><span aria-hidden="true">⌕</span><input type="search" id="searchInput" placeholder="Search accounts" autocomplete="off"></label></div>
+        <div class="table-tools"><div class="filter-group" role="group" aria-label="Filter accounts"><button type="button" class="filter-button is-selected" data-filter="all">All <span id="filterAll">0</span></button><button type="button" class="filter-button" data-filter="ready">Ready <span id="filterReady">0</span></button><button type="button" class="filter-button" data-filter="attention">Needs attention <span id="filterAttention">0</span></button></div><label class="bucket-control" id="bucketControl">Quota window <select id="bucketSelect" aria-label="Quota window"><option value="auto">Default window</option></select></label></div>
+        <div class="account-list" id="accountList" aria-live="polite"></div>
+        <p class="privacy-note">Authorized group members share this list. Percentages are remaining allowance, not token counts.</p>
+      </section>
+
+      <div class="lower-grid">
+        <section class="content-section reset-section" aria-labelledby="resetsTitle"><div class="section-head"><div><h2 id="resetsTitle">Next resets</h2><p class="section-subtitle">Upcoming quota window renewals</p></div><span class="section-count" id="resetEventCount">0 scheduled</span></div><div class="timeline" id="timeline"></div></section>
+        <section class="content-section settings-section" aria-labelledby="settingsTitle"><div class="section-head"><div><h2 id="settingsTitle">Settings</h2><p class="section-subtitle">Recommendation preferences</p></div></div>
+          <label class="setting-row" for="reserveInput"><span><strong>Reserve</strong><small>Minimum remaining allowance</small></span><span class="number-control"><input id="reserveInput" type="number" min="0" max="99" step="1" value="10"><span>%</span></span></label>
+          <fieldset class="strategy-setting"><legend>Strategy</legend><div class="segmented" role="group" aria-label="Recommendation strategy"><button type="button" data-strategy="balanced" class="is-selected">Balanced</button><button type="button" data-strategy="capacity">Capacity</button><button type="button" data-strategy="reset">Reset</button></div></fieldset>
+        </section>
+      </div>
+    </main>
+    <footer class="footer"><span>Account Desk</span><span id="updatedLabel">Waiting for account data</span></footer>
+  </div>
+
+  <dialog id="accountDialog" aria-labelledby="dialogTitle"><form id="accountForm" method="dialog"><div class="dialog-head"><div><p class="eyebrow">ACCOUNT DETAILS</p><h2 id="dialogTitle">Add account</h2></div><button type="button" class="icon-button" id="closeDialog" aria-label="Close">×</button></div>
+    <div class="form-grid"><label class="field field-wide">Email<input name="email" type="email" maxlength="160" placeholder="Sign in to fill this in"></label><label class="field field-wide">Note <span class="optional">Optional</span><input name="label" maxlength="80" placeholder="e.g. Work profile"></label><label class="field">Plan <span class="optional">Optional</span><input name="plan" maxlength="60" placeholder="e.g. Plus"></label></div>
+    <div class="quota-editor" id="quotaEditor"><div class="quota-editor-heading"><div><h3>Remaining allowance</h3><p>Leave blank if unknown. A reset date is optional.</p></div></div>
+      <div class="quota-window"><div class="quota-window-name"><span class="window-dot short-dot"></span><strong>Short window</strong></div><label class="field">Remaining %<input name="shortRemaining" type="number" min="0" max="100" step="0.1" placeholder="Unknown"></label><label class="field">Resets at<input name="shortReset" type="datetime-local"></label></div>
+      <div class="quota-window"><div class="quota-window-name"><span class="window-dot week-dot"></span><strong>Weekly window</strong></div><label class="field">Remaining %<input name="weeklyRemaining" type="number" min="0" max="100" step="0.1" placeholder="Unknown"></label><label class="field">Resets at<input name="weeklyReset" type="datetime-local"></label></div>
+    </div><p class="dialog-note" id="dialogNote">Unknown values stay unknown; expired snapshots are never reset automatically.</p><p class="dialog-error" id="dialogError" role="alert"></p>
+    <div class="dialog-actions"><button type="button" class="button button-quiet" id="cancelDialog">Cancel</button><button type="submit" class="button button-primary" id="saveAccount">Save account</button></div>
+  </form></dialog>
+  <dialog id="deviceDialog" aria-labelledby="deviceTitle"><div class="device-body"><div class="dialog-head"><div><p class="eyebrow">CONNECT CODEX ACCOUNT</p><h2 id="deviceTitle">Sign in with OpenAI</h2></div><button type="button" class="icon-button" id="closeDevice" aria-label="Close">×</button></div><div class="device-content"><p id="deviceDesc">Authorize directly in your Chrome browser (no device code required).</p><a class="button button-primary" id="deviceLink" href="https://auth.openai.com/codex/device" target="_blank" rel="noopener noreferrer">Open OpenAI sign-in</a><div class="device-code" id="deviceCodeWrap" hidden><output id="deviceCode" aria-label="One-time sign-in code"></output><button class="button" id="copyCode" type="button">Copy code</button></div><p class="device-pending" id="devicePending">Waiting for sign-in…</p><button class="button button-quiet" id="cancelDevice" type="button">Cancel</button></div></div></dialog>
+  <aside class="auth-fallback" id="authFallback" hidden aria-live="polite"><span>Sign-in popup was blocked.</span><a id="authFallbackLink" href="#" target="_blank" rel="noopener noreferrer">Open sign-in</a><button id="dismissAuthFallback" type="button" aria-label="Dismiss sign-in link">×</button></aside>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
