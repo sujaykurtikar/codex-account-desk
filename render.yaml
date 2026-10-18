@@ -2,20 +2,15 @@ services:
   - type: web
     name: codex-account-desk
     runtime: node
-    plan: starter
-    region: singapore
+    plan: free
     buildCommand: npm ci
     startCommand: npm start
     healthCheckPath: /healthz
-    disk:
-      name: account-desk-data
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
       - key: NODE_ENV
         value: production
       - key: ACCOUNT_DESK_DATA
-        value: /var/data
+        value: /tmp/account-desk-data
       - key: DASHBOARD_PASSWORD
         sync: false
       - key: SESSION_SECRET
