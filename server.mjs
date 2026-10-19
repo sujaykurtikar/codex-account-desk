@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { readFile, writeFile, rename, mkdir, chmod, rm } from 'node:fs/promises';
+import { readFile, writeFile, rename, mkdir, chmod, rm, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,6 +24,46 @@ const SESSION_SECRET = process.env.SESSION_SECRET || '';
 if (PRODUCTION && (!ACCESS_PASSWORD || SESSION_SECRET.length < 32 || !process.env.RENDER_EXTERNAL_HOSTNAME)) throw new Error('Set DASHBOARD_PASSWORD, SESSION_SECRET, and RENDER_EXTERNAL_HOSTNAME before deploying.');
 await mkdir(DATA, { recursive: true, mode: 0o700 });
 await chmod(DATA, 0o700);
+const MONGO_URI = process.env.MONGODB_URI || '';
+let mongoPushed = Promise.resolve(), keepMirror = false;
+function mirrorCol() {
+  return import('mongodb').then(m => new m.MongoClient(MONGO_URI, { serverSelectionTimeoutMS: 15000 }).connect().then(c => c.db('account_desk').collection('snapshot'))).then(null, () => null);
+}
+async function pushMirror() {
+  if (!MONGO_URI || keepMirror) return;
+  const col = await mirrorCol();
+  if (!col) return;
+  // ponytail: snapshot only top-level profile files under 200KB — covers auth.json/config.toml; nested session dirs are not persisted
+  const files = {};
+  for (const id of state.accounts.map(a => a.id)) {
+    const home = profilePath(id);
+    let entries; try { entries = await readdir(home, { withFileTypes: true }); } catch { continue; }
+    for (const e of entries) {
+      if (!e.isFile()) continue;
+      try {
+        const p = join(home, e.name);
+        if ((await stat(p)).size > 200 * 1024) continue;
+        files[`profiles/${id}/${e.name}`] = (await readFile(p)).toString('base64');
+      } catch {}
+    }
+  }
+  await col.updateOne({ _id: 'snapshot' }, { $set: { state, files } }, { upsert: true });
+}
+async function restoreMirror() {
+  if (!MONGO_URI) return;
+  const col = await mirrorCol();
+  if (!col) throw new Error('MongoDB unreachable');
+  const doc = await col.findOne({ _id: 'snapshot' });
+  if (!doc?.state?.accounts) return;
+  state = JSON.parse(JSON.stringify(doc.state));
+  for (const [path, b64] of Object.entries(doc.files || {})) {
+    const target = join(DATA, ...path.split('/'));
+    if (existsSync(target)) continue;
+    await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+    await writeFile(target, Buffer.from(b64, 'base64'), { mode: 0o600 });
+  }
+  console.log(`Restored ${doc.state.accounts.length} account(s) from MongoDB.`);
+}
 let state;
 try { state = JSON.parse(await readFile(join(DATA, 'state.json'), 'utf8')); }
 catch (e) {
@@ -31,6 +71,12 @@ catch (e) {
   state = { accounts: [], activeId: null, settings: { reserve: 10, strategy: 'balanced', bucket: 'auto' } };
 }
 if (state.accounts.length === 5 && state.accounts.every((a, i) => a.label === `Account ${String(i + 1).padStart(2, '0')}` && !a.email && !a.connected && !a.updatedAt)) state.accounts = [];
+if (state.accounts.length === 0 && state.activeId === null) {
+  try { await restoreMirror(); }
+  catch (e) {
+    if (MONGO_URI) { console.error('MongoDB restore skipped, updates will not sync until restart:', e.message || String(e)); keepMirror = true; }
+  }
+}
 const clients = new Map(), syncing = new Map();
 let writes = Promise.resolve(), pendingLogin = null;
 const loginAttempts = new Map();
@@ -53,7 +99,7 @@ function save() {
     await writeFile(join(DATA, 'state.tmp'), snapshot, { mode: 0o600 });
     await rename(join(DATA, 'state.tmp'), join(DATA, 'state.json'));
   });
-  writes = operation;
+  writes = operation.then(() => pushMirror().catch(e => console.error('Mirror push failed:', message(e))));
   return operation;
 }
 const shellQuote = text => "'" + text.replaceAll("'", "'\\''") + "'";

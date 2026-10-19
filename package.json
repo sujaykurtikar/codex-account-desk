@@ -11,6 +11,7 @@
     "test:browser": "node --test test/browser-smoke.mjs"
   },
   "dependencies": {
-    "@openai/codex": "0.163.0"
+    "@openai/codex": "0.163.0",
+    "mongodb": "^6.20.0"
   }
 }
