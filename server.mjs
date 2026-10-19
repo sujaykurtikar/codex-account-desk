@@ -25,6 +25,7 @@ if (PRODUCTION && (!ACCESS_PASSWORD || SESSION_SECRET.length < 32 || !process.en
 await mkdir(DATA, { recursive: true, mode: 0o700 });
 await chmod(DATA, 0o700);
 const MONGO_URI = process.env.MONGODB_URI || '';
+console.log(`Account Desk: mirror ${MONGO_URI ? `ENABLED (${MONGO_URI.slice(0, 29)}...)` : 'OFF - MONGODB_URI not set'}`);
 let mongoPushed = Promise.resolve(), keepMirror = false;
 function mirrorCol() {
   return import('mongodb').then(m => new m.MongoClient(MONGO_URI, { serverSelectionTimeoutMS: 15000 }).connect().then(c => c.db('account_desk').collection('snapshot'))).then(null, () => null);
