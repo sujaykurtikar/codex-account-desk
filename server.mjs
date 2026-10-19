@@ -333,6 +333,8 @@ async function api(req, path) {
 const staticFiles = { '/': ['index.html', 'text/html'], '/index.html': ['index.html', 'text/html'], '/styles.css': ['styles.css', 'text/css'], '/app.js': ['app.js', 'text/javascript'], '/logic.js': ['logic.js', 'text/javascript'] };
 const server = http.createServer(async (req, res) => {
   try {
+    const path = new URL(req.url, `http://${req.headers.host}`).pathname;
+    if ((req.method === 'GET' || req.method === 'HEAD') && path === '/api/health') { res.statusCode = 200; res.setHeader('Content-Type', 'text/plain'); res.end('ok'); return; }
     const host = req.headers.host || '';
     const localHosts = [`127.0.0.1:${server.address()?.port}`, `localhost:${server.address()?.port}`];
     if (PRODUCTION ? host.split(':')[0].toLowerCase() !== process.env.RENDER_EXTERNAL_HOSTNAME.toLowerCase() : !localHosts.includes(host)) fail('Invalid host', 403);
@@ -340,7 +342,6 @@ const server = http.createServer(async (req, res) => {
     if (req.headers['sec-fetch-site'] === 'cross-site') fail('Cross-site request denied', 403);
     res.setHeader('Cache-Control', 'no-store'); res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
-    const path = new URL(req.url, `http://${req.headers.host}`).pathname;
     if (req.method === 'GET' && path === '/healthz') { res.statusCode = 200; res.end('ok'); return; }
     if (path.startsWith('/api/')) {
       res.setHeader('Content-Type', 'application/json');
