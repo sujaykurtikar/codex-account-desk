@@ -198,13 +198,17 @@ async function syncAccount(account) {
       if (state.accounts.includes(account)) account.error = message(e);
     }
     await save();
-  })().finally(() => syncing.delete(account.id));
+  })().finally(() => {
+    syncing.delete(account.id);
+    if (pendingLogin?.id !== account.id) clients.get(account.id)?.then(c => c.stop()).catch(() => {});
+  });
   syncing.set(account.id, task);
   return task;
 }
 async function refresh(id) {
   const accounts = id ? [find(id)] : state.accounts;
-  await Promise.allSettled(accounts.filter(a => a.source === 'codex').map(syncAccount));
+  // ponytail: sequential sync so only one codex child process is alive at a time — parallel-on-512MiB OOM-kills the instance
+  for (const a of accounts.filter(a => a.source === 'codex')) await syncAccount(a).catch(() => {});
   return publicState();
 }
 async function body(req) {
@@ -297,6 +301,7 @@ async function api(req, path) {
       const client = await clients.get(account.id);
       await client?.request('account/login/cancel', { loginId: pendingLogin.loginId }).catch(() => {});
       pendingLogin = null;
+      client?.stop();
     }
     return publicState();
   }
