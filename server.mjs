@@ -53,7 +53,8 @@ async function pushMirror() {
 async function restoreMirror() {
   if (!MONGO_URI) return;
   const col = await mirrorCol();
-  if (!col) throw new Error('MongoDB unreachable');
+      if (!col) { await new Promise(r => setTimeout(r, 5000)); col = await mirrorCol(); }
+      if (!col) throw new Error('MongoDB unreachable');
   const doc = await col.findOne({ _id: 'snapshot' });
   if (!doc?.state?.accounts) return;
   state = JSON.parse(JSON.stringify(doc.state));
@@ -68,7 +69,8 @@ async function restoreMirror() {
 let state;
 try { state = JSON.parse(await readFile(join(DATA, 'state.json'), 'utf8')); }
 catch (e) {
-  if (e.code !== 'ENOENT') throw new Error('Cannot read saved state. Check state.json before restarting.');
+  // With the mirror enabled a corrupt state.json falls back to the MongoDB restore below instead of crash-looping.
+  if (e.code !== 'ENOENT' && !MONGO_URI) throw new Error('Cannot read saved state. Check state.json before restarting.');
   state = { accounts: [], activeId: null, settings: { reserve: 10, strategy: 'balanced', bucket: 'auto' } };
 }
 if (state.accounts.length === 5 && state.accounts.every((a, i) => a.label === `Account ${String(i + 1).padStart(2, '0')}` && !a.email && !a.connected && !a.updatedAt)) state.accounts = [];
@@ -193,7 +195,9 @@ async function syncAccount(account) {
       }
       const data = await client.request('account/rateLimits/read');
       if (!state.accounts.includes(account)) return;
+      const before = JSON.stringify([account.email, account.plan, account.limits, account.buckets, account.error]);
       Object.assign(account, normalizedLimits(data), { email, label: email || account.label, plan: identity.planType || 'ChatGPT', source: 'codex', connected: true, error: null, updatedAt: new Date().toISOString() });
+      if (JSON.stringify([account.email, account.plan, account.limits, account.buckets, account.error]) === before) return;
     } catch (e) {
       if (state.accounts.includes(account)) account.error = message(e);
     }
