@@ -109,15 +109,10 @@ catch (e) {
   state = { accounts: [], activeId: null, settings: { reserve: 10, strategy: 'balanced', bucket: 'auto' } };
 }
 if (state.accounts.length === 5 && state.accounts.every((a, i) => a.label === `Account ${String(i + 1).padStart(2, '0')}` && !a.email && !a.connected && !a.updatedAt)) state.accounts = [];
-if (state.accounts.length === 0 && state.activeId === null) {
-  // Never let a slow Atlas hold the boot hostage: give up after 10s and keep the mirror disabled
-  // (keepMirror) so an empty state can never overwrite the real one.
-  try {
-    await Promise.race([restoreMirror(), sleep(10000).then(() => { throw new Error('MongoDB restore timed out'); })]);
-  } catch (e) {
-    if (MONGO_URI) { console.error('MongoDB restore skipped, updates will not sync until restart:', e.message || String(e)); keepMirror = true; }
-  }
-}
+// The restore runs after the port is open (see below). Until it lands we must never push the empty
+// state to MongoDB, or a slow Atlas would overwrite the real snapshot.
+const needsRestore = !!MONGO_URI && state.accounts.length === 0 && state.activeId === null;
+if (needsRestore) keepMirror = true;
 const clients = new Map(), syncing = new Map();
 // ponytail: each codex child costs ~90MB and the free instance caps at 512MiB — keep at most two warm
 const MAX_CLIENTS = 2;
@@ -444,8 +439,17 @@ process.on('uncaughtException', onFatal('uncaughtException'));
 process.on('unhandledRejection', onFatal('unhandledRejection'));
 // Watchdog: if the listener dies, exit so Render restarts the service instead of serving dead sockets.
 setInterval(() => { if (!server.listening) { console.error('HTTP server stopped listening, exiting for a clean restart.'); process.exit(1); } }, 15000).unref();
+// Open the port FIRST: an instance that has not bound its port in time gets killed by Render
+// ("Exited with status 1"). The Atlas restore now happens behind an already-open port.
+server.listen(PORT, PRODUCTION ? '0.0.0.0' : '127.0.0.1', () => console.log(`Account Desk: ${PRODUCTION ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` : `http://127.0.0.1:${server.address().port}`} (port open in ${Date.now() - startedAt}ms)`));
+const boot = needsRestore
+  ? Promise.race([restoreMirror(), sleep(10000).then(() => { throw new Error('MongoDB restore timed out'); })])
+      .then(() => { keepMirror = false; })
+      .catch(e => { console.error('MongoDB restore skipped, updates will not sync until restart:', e.message || String(e)); keepMirror = true; })
+  : Promise.resolve();
+await boot;
 await save();
-server.listen(PORT, PRODUCTION ? '0.0.0.0' : '127.0.0.1', () => console.log(`Account Desk: ${PRODUCTION ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` : `http://127.0.0.1:${server.address().port}`} (ready in ${Date.now() - startedAt}ms)`));
+console.log(`Account Desk: ready in ${Date.now() - startedAt}ms (${state.accounts.length} account(s)${needsRestore ? ' restored from MongoDB' : ''})`);
 // One account per two minutes, round-robin: every account is refreshed about every ten minutes
 // (the UI marks snapshots stale after 15 minutes) without one big CPU spike that freezes the site.
 let refreshCursor = 0;
