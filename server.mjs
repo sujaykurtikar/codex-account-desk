@@ -449,8 +449,6 @@ const timer = setInterval(() => {
   enqueue(() => syncAccount(account));
 }, 2 * 60 * 1000);
 refreshAll();
-// TEMPORARY crash test - remove after verifying Render restarts the service and the mirror restores state.
-setTimeout(() => { console.error('CRASH TEST: exiting hard to verify recovery'); process.exit(1); }, 45000);
 async function shutdown() {
   clearInterval(timer);
   // Hard exit so a stuck write cannot delay Render's restart.
