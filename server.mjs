@@ -226,7 +226,13 @@ const enqueue = task => { chain = chain.then(task).catch(() => {}); return chain
 function refreshAll() {
   if (!fullPass) {
     fullPass = enqueue(async () => {
-      for (const a of state.accounts.filter(a => a.source === 'codex')) await syncAccount(a).catch(() => {});
+      const accounts = state.accounts.filter(a => a.source === 'codex');
+      for (const a of accounts) {
+        await syncAccount(a).catch(() => {});
+        // ponytail: pause between accounts — the free instance has a tiny CPU quota and a 5-account
+        // burst starves the web server (state calls went from 0.8s to 38s)
+        await new Promise(r => setTimeout(r, 4000));
+      }
     }).finally(() => { fullPass = null; });
   }
   return fullPass;
@@ -388,7 +394,7 @@ const server = http.createServer(async (req, res) => {
 server.on('error', e => { console.error(e.code === 'EADDRINUSE' ? `Port ${PORT} is busy. Try PORT=${PORT + 1} node server.mjs` : message(e)); process.exit(1); });
 await save();
 server.listen(PORT, PRODUCTION ? '0.0.0.0' : '127.0.0.1', () => console.log(`Account Desk: ${PRODUCTION ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` : `http://127.0.0.1:${server.address().port}`}`));
-// One account per minute, round-robin: every account is refreshed about every five minutes
+// One account per two minutes, round-robin: every account is refreshed about every ten minutes
 // (the UI marks snapshots stale after 15 minutes) without one big CPU spike that freezes the site.
 let refreshCursor = 0;
 const timer = setInterval(() => {
@@ -396,7 +402,7 @@ const timer = setInterval(() => {
   if (!accounts.length) return;
   const account = accounts[refreshCursor++ % accounts.length];
   enqueue(() => syncAccount(account));
-}, 60 * 1000);
+}, 2 * 60 * 1000);
 refreshAll();
 async function shutdown() { clearInterval(timer); for (const p of clients.values()) (await p.catch(() => null))?.stop(); await writes.catch(() => {}); server.close(() => process.exit(0)); }
 process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown);
