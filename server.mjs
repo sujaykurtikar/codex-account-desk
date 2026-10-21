@@ -12,6 +12,7 @@ const DATA = resolve(process.env.ACCOUNT_DESK_DATA || join(homedir(), '.local/sh
 const PORT = Number(process.env.PORT || 4317);
 import { existsSync } from 'node:fs';
 
+const startedAt = Date.now();
 const defaultCodex = existsSync(join(ROOT, 'node_modules/.bin/codex'))
   ? join(ROOT, 'node_modules/.bin/codex')
   : (existsSync('/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex')
@@ -109,8 +110,11 @@ catch (e) {
 }
 if (state.accounts.length === 5 && state.accounts.every((a, i) => a.label === `Account ${String(i + 1).padStart(2, '0')}` && !a.email && !a.connected && !a.updatedAt)) state.accounts = [];
 if (state.accounts.length === 0 && state.activeId === null) {
-  try { await restoreMirror(); }
-  catch (e) {
+  // Never let a slow Atlas hold the boot hostage: give up after 10s and keep the mirror disabled
+  // (keepMirror) so an empty state can never overwrite the real one.
+  try {
+    await Promise.race([restoreMirror(), sleep(10000).then(() => { throw new Error('MongoDB restore timed out'); })]);
+  } catch (e) {
     if (MONGO_URI) { console.error('MongoDB restore skipped, updates will not sync until restart:', e.message || String(e)); keepMirror = true; }
   }
 }
@@ -429,6 +433,9 @@ const server = http.createServer(async (req, res) => {
   }
 });
 server.on('error', e => { console.error(e.code === 'EADDRINUSE' ? `Port ${PORT} is busy. Try PORT=${PORT + 1} node server.mjs` : message(e)); process.exit(1); });
+// Short keep-alive: idle sockets pile up on a small instance and keep shutdown waiting.
+server.keepAliveTimeout = 5000;
+server.headersTimeout = 10000;
 // Keep serving through unexpected errors — a crash means a 502 window for every visitor. Only bail out
 // after repeated fatals so Render can restart us on a clean slate.
 let fatalCount = 0;
@@ -438,7 +445,7 @@ process.on('unhandledRejection', onFatal('unhandledRejection'));
 // Watchdog: if the listener dies, exit so Render restarts the service instead of serving dead sockets.
 setInterval(() => { if (!server.listening) { console.error('HTTP server stopped listening, exiting for a clean restart.'); process.exit(1); } }, 15000).unref();
 await save();
-server.listen(PORT, PRODUCTION ? '0.0.0.0' : '127.0.0.1', () => console.log(`Account Desk: ${PRODUCTION ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` : `http://127.0.0.1:${server.address().port}`}`));
+server.listen(PORT, PRODUCTION ? '0.0.0.0' : '127.0.0.1', () => console.log(`Account Desk: ${PRODUCTION ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` : `http://127.0.0.1:${server.address().port}`} (ready in ${Date.now() - startedAt}ms)`));
 // One account per two minutes, round-robin: every account is refreshed about every ten minutes
 // (the UI marks snapshots stale after 15 minutes) without one big CPU spike that freezes the site.
 let refreshCursor = 0;
@@ -451,11 +458,13 @@ const timer = setInterval(() => {
 refreshAll();
 async function shutdown() {
   clearInterval(timer);
-  // Hard exit so a stuck write cannot delay Render's restart.
-  const hardExit = setTimeout(() => process.exit(0), 10000); hardExit.unref();
-  for (const p of clients.values()) (await p.catch(() => null))?.stop();
+  // Always exit 0: Render reports a non-zero exit as a server failure and emails the owner.
+  const hardExit = setTimeout(() => process.exit(0), 8000);
+  hardExit.unref();
+  for (const p of clients.values()) p.then(c => c.stop()).catch(() => {});
   await writes.catch(() => {});
   await resetMongo();
-  server.close(() => process.exit(0));
+  try { server.close(); server.closeIdleConnections?.(); } catch {}
+  setTimeout(() => process.exit(0), 1500);
 }
 process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown);
