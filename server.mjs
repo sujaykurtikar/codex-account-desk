@@ -209,10 +209,17 @@ async function syncAccount(account) {
   syncing.set(account.id, task);
   return task;
 }
+let refreshRun = null;
 async function refresh(id) {
-  const accounts = id ? [find(id)] : state.accounts;
-  // ponytail: sequential sync so only one codex child process is alive at a time — parallel-on-512MiB OOM-kills the instance
-  for (const a of accounts.filter(a => a.source === 'codex')) await syncAccount(a).catch(() => {});
+  // One refresh at a time: duplicate runs would spawn extra codex children and could OOM the 512MiB instance.
+  if (!refreshRun) {
+    refreshRun = (async () => {
+      const accounts = id ? [find(id)] : state.accounts;
+      // ponytail: sequential sync so only one codex child process is alive at a time — parallel-on-512MiB OOM-kills the instance
+      for (const a of accounts.filter(a => a.source === 'codex')) await syncAccount(a).catch(() => {});
+    })().finally(() => { refreshRun = null; });
+  }
+  await refreshRun;
   return publicState();
 }
 async function body(req) {
