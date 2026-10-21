@@ -26,14 +26,33 @@ await mkdir(DATA, { recursive: true, mode: 0o700 });
 await chmod(DATA, 0o700);
 const MONGO_URI = process.env.MONGODB_URI || '';
 console.log(`Account Desk: mirror ${MONGO_URI ? `ENABLED (${MONGO_URI.slice(0, 29)}...)` : 'OFF - MONGODB_URI not set'}`);
-let mongoPushed = Promise.resolve(), keepMirror = false;
-function mirrorCol() {
-  return import('mongodb').then(m => new m.MongoClient(MONGO_URI, { serverSelectionTimeoutMS: 15000 }).connect().then(c => c.db('account_desk').collection('snapshot'))).then(null, () => null);
+let keepMirror = false;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+// Declared up top: the boot-time restore path runs before the helpers below are initialised.
+const message = e => (e.message || 'Request failed').replace(/Bearer\s+\S+/gi, '[redacted]').slice(0, 240);
+// One shared client: mirrorCol used to open a new MongoClient per save and never close it — that leaked
+// connection pools until the process died.
+let mongoClient = null, mongoCol = null;
+async function mirrorCol() {
+  if (!MONGO_URI) return null;
+  if (mongoCol) return mongoCol;
+  try {
+    const m = await import('mongodb');
+    mongoClient = new m.MongoClient(MONGO_URI, { serverSelectionTimeoutMS: 10000, maxPoolSize: 5 });
+    await mongoClient.connect();
+    mongoCol = mongoClient.db('account_desk').collection('snapshot');
+    return mongoCol;
+  } catch (e) {
+    console.error('MongoDB connect failed:', message(e));
+    await resetMongo();
+    return null;
+  }
 }
-async function pushMirror() {
-  if (!MONGO_URI || keepMirror) return;
-  const col = await mirrorCol();
-  if (!col) return;
+async function resetMongo() {
+  try { await mongoClient?.close(); } catch {}
+  mongoClient = null; mongoCol = null;
+}
+async function collectFiles() {
   // ponytail: snapshot only top-level profile files under 200KB — covers auth.json/config.toml; nested session dirs are not persisted
   const files = {};
   for (const id of state.accounts.map(a => a.id)) {
@@ -48,13 +67,28 @@ async function pushMirror() {
       } catch {}
     }
   }
-  await col.updateOne({ _id: 'snapshot' }, { $set: { state, files } }, { upsert: true });
+  return files;
+}
+async function pushMirror() {
+  if (!MONGO_URI || keepMirror) return;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const col = await mirrorCol();
+    if (!col) { if (attempt < 3) await sleep(5000 * attempt); continue; }
+    try {
+      await col.updateOne({ _id: 'snapshot' }, { $set: { state, files: await collectFiles() } }, { upsert: true });
+      return;
+    } catch (e) {
+      console.error(`Mirror push failed (attempt ${attempt}):`, message(e));
+      await resetMongo();
+      if (attempt < 3) await sleep(5000 * attempt);
+    }
+  }
 }
 async function restoreMirror() {
   if (!MONGO_URI) return;
-  const col = await mirrorCol();
-      if (!col) { await new Promise(r => setTimeout(r, 5000)); col = await mirrorCol(); }
-      if (!col) throw new Error('MongoDB unreachable');
+  let col = await mirrorCol();
+  if (!col) { await sleep(5000); col = await mirrorCol(); }
+  if (!col) throw new Error('MongoDB unreachable');
   const doc = await col.findOne({ _id: 'snapshot' });
   if (!doc?.state?.accounts) return;
   state = JSON.parse(JSON.stringify(doc.state));
@@ -110,7 +144,6 @@ function save() {
 const shellQuote = text => "'" + text.replaceAll("'", "'\\''") + "'";
 const profilePath = id => join(DATA, 'profiles', id);
 const publicState = () => ({ ...state, remoteProfiles: PRODUCTION, accounts: state.accounts.map(a => ({ ...a, command: PRODUCTION ? null : `CODEX_HOME=${shellQuote(profilePath(a.id))} ${CODEX.includes(' ') ? shellQuote(CODEX) : CODEX}` })) });
-const message = e => (e.message || 'Request failed').replace(/Bearer\s+\S+/gi, '[redacted]').slice(0, 240);
 function fail(text, code = 400) { const e = new Error(text); e.status = code; throw e; }
 function find(id) { return state.accounts.find(a => a.id === id) || fail('Account not found', 404); }
 function normalizeWindow(w) {
@@ -134,7 +167,7 @@ class Client {
     await mkdir(home, { recursive: true, mode: 0o700 });
     // Force profile-local storage rather than sharing the system keychain.
     await writeFile(join(home, 'config.toml'), 'cli_auth_credentials_store = "file"\n', { mode: 0o600 });
-    this.child = spawn(CODEX, ['app-server', '--stdio', '-c', 'cli_auth_credentials_store="file"'], { env: { ...process.env, CODEX_HOME: home }, stdio: ['pipe', 'pipe', 'pipe'] });
+    this.child = spawn(CODEX, ['app-server', '--stdio', '-c', 'cli_auth_credentials_store="file"'], { env: { ...process.env, CODEX_HOME: home }, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
     this.child.stderr.resume();
     this.child.stdin.on('error', e => this.stop(e));
     this.child.once('error', e => this.stop(new Error(e.code === 'ENOENT' ? 'Codex CLI not found. Set CODEX_BIN or install Codex CLI.' : 'Codex app server could not start.')));
@@ -170,7 +203,11 @@ class Client {
     if (this.closed) return;
     this.closed = true;
     for (const p of this.pending.values()) { clearTimeout(p.timer); p.reject(error); }
-    this.pending.clear(); this.child?.kill(); clients.delete(this.account.id);
+    this.pending.clear();
+    // Kill the whole process group: codex spawns helpers, and orphans kept eating the 512MiB instance.
+    if (this.child?.pid) { try { process.kill(-this.child.pid, 'SIGKILL'); } catch { try { this.child.kill('SIGKILL'); } catch {} } }
+    else this.child?.kill();
+    clients.delete(this.account.id);
   }
 }
 async function clientFor(account) {
@@ -392,6 +429,14 @@ const server = http.createServer(async (req, res) => {
   }
 });
 server.on('error', e => { console.error(e.code === 'EADDRINUSE' ? `Port ${PORT} is busy. Try PORT=${PORT + 1} node server.mjs` : message(e)); process.exit(1); });
+// Keep serving through unexpected errors — a crash means a 502 window for every visitor. Only bail out
+// after repeated fatals so Render can restart us on a clean slate.
+let fatalCount = 0;
+const onFatal = label => err => { console.error(`[${label}]`, err?.stack || err); if (++fatalCount >= 3) { console.error('Too many fatal errors, exiting so Render restarts the service.'); process.exit(1); } };
+process.on('uncaughtException', onFatal('uncaughtException'));
+process.on('unhandledRejection', onFatal('unhandledRejection'));
+// Watchdog: if the listener dies, exit so Render restarts the service instead of serving dead sockets.
+setInterval(() => { if (!server.listening) { console.error('HTTP server stopped listening, exiting for a clean restart.'); process.exit(1); } }, 15000).unref();
 await save();
 server.listen(PORT, PRODUCTION ? '0.0.0.0' : '127.0.0.1', () => console.log(`Account Desk: ${PRODUCTION ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` : `http://127.0.0.1:${server.address().port}`}`));
 // One account per two minutes, round-robin: every account is refreshed about every ten minutes
@@ -404,5 +449,13 @@ const timer = setInterval(() => {
   enqueue(() => syncAccount(account));
 }, 2 * 60 * 1000);
 refreshAll();
-async function shutdown() { clearInterval(timer); for (const p of clients.values()) (await p.catch(() => null))?.stop(); await writes.catch(() => {}); server.close(() => process.exit(0)); }
+async function shutdown() {
+  clearInterval(timer);
+  // Hard exit so a stuck write cannot delay Render's restart.
+  const hardExit = setTimeout(() => process.exit(0), 10000); hardExit.unref();
+  for (const p of clients.values()) (await p.catch(() => null))?.stop();
+  await writes.catch(() => {});
+  await resetMongo();
+  server.close(() => process.exit(0));
+}
 process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown);
