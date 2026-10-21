@@ -81,6 +81,8 @@ if (state.accounts.length === 0 && state.activeId === null) {
   }
 }
 const clients = new Map(), syncing = new Map();
+// ponytail: each codex child costs ~90MB and the free instance caps at 512MiB — keep at most two warm
+const MAX_CLIENTS = 2;
 let writes = Promise.resolve(), pendingLogin = null;
 const loginAttempts = new Map();
 const COOKIE = 'account_desk_session', SESSION_TTL = 30 * 24 * 60 * 60;
@@ -172,11 +174,20 @@ class Client {
   }
 }
 async function clientFor(account) {
-  if (!clients.has(account.id)) {
-    const p = new Client(account).start(); clients.set(account.id, p);
-    p.catch(() => clients.delete(account.id));
+  const existing = clients.get(account.id);
+  if (existing) { clients.delete(account.id); clients.set(account.id, existing); return existing; }
+  const p = new Client(account).start();
+  clients.set(account.id, p);
+  p.catch(() => { if (clients.get(account.id) === p) clients.delete(account.id); });
+  // LRU pool: warm clients make a refresh ~0.3s instead of ~3s, and the cap keeps the 512MiB instance safe.
+  while (clients.size > MAX_CLIENTS) {
+    const oldest = [...clients.keys()].find(id => id !== pendingLogin?.id);
+    if (!oldest) break;
+    const victim = clients.get(oldest);
+    clients.delete(oldest);
+    victim.then(c => c.stop()).catch(() => {});
   }
-  return clients.get(account.id);
+  return p;
 }
 async function syncAccount(account) {
   if (syncing.has(account.id)) return syncing.get(account.id);
@@ -204,23 +215,21 @@ async function syncAccount(account) {
     await save();
   })().finally(() => {
     syncing.delete(account.id);
-    if (pendingLogin?.id !== account.id) clients.get(account.id)?.then(c => c.stop()).catch(() => {});
   });
   syncing.set(account.id, task);
   return task;
 }
-let refreshRun = null;
-async function refresh(id) {
-  // One refresh at a time: duplicate runs would spawn extra codex children and could OOM the 512MiB instance.
-  if (!refreshRun) {
-    refreshRun = (async () => {
-      const accounts = id ? [find(id)] : state.accounts;
-      // ponytail: sequential sync so only one codex child process is alive at a time — parallel-on-512MiB OOM-kills the instance
-      for (const a of accounts.filter(a => a.source === 'codex')) await syncAccount(a).catch(() => {});
-    })().finally(() => { refreshRun = null; });
+// All syncs run through one queue: only one codex child is busy at a time, so the 512MiB instance never starves.
+let chain = Promise.resolve();
+let fullPass = null;
+const enqueue = task => { chain = chain.then(task).catch(() => {}); return chain; };
+function refreshAll() {
+  if (!fullPass) {
+    fullPass = enqueue(async () => {
+      for (const a of state.accounts.filter(a => a.source === 'codex')) await syncAccount(a).catch(() => {});
+    }).finally(() => { fullPass = null; });
   }
-  await refreshRun;
-  return publicState();
+  return fullPass;
 }
 async function body(req) {
   let text = '';
@@ -270,7 +279,7 @@ async function api(req, path) {
     if (data.id !== null) find(data.id);
     state.activeId = data.id; await save(); return publicState();
   }
-  if (req.method === 'POST' && path === '/api/refresh') return refresh(data.id);
+  if (req.method === 'POST' && path === '/api/refresh') { if (data.id) find(data.id); if (data.id) enqueue(() => syncAccount(find(data.id))); else refreshAll(); return publicState(); }
   const route = path.match(/^\/api\/accounts\/([a-zA-Z0-9-]+)(?:\/(connect|disconnect|cancel-login|import-local))?$/);
   if (!route) fail('Not found', 404);
   const account = find(route[1]);
@@ -379,7 +388,15 @@ const server = http.createServer(async (req, res) => {
 server.on('error', e => { console.error(e.code === 'EADDRINUSE' ? `Port ${PORT} is busy. Try PORT=${PORT + 1} node server.mjs` : message(e)); process.exit(1); });
 await save();
 server.listen(PORT, PRODUCTION ? '0.0.0.0' : '127.0.0.1', () => console.log(`Account Desk: ${PRODUCTION ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` : `http://127.0.0.1:${server.address().port}`}`));
-const timer = setInterval(() => refresh().catch(() => {}), 5 * 60000);
-refresh().catch(() => {});
+// One account per minute, round-robin: every account is refreshed about every five minutes
+// (the UI marks snapshots stale after 15 minutes) without one big CPU spike that freezes the site.
+let refreshCursor = 0;
+const timer = setInterval(() => {
+  const accounts = state.accounts.filter(a => a.source === 'codex');
+  if (!accounts.length) return;
+  const account = accounts[refreshCursor++ % accounts.length];
+  enqueue(() => syncAccount(account));
+}, 60 * 1000);
+refreshAll();
 async function shutdown() { clearInterval(timer); for (const p of clients.values()) (await p.catch(() => null))?.stop(); await writes.catch(() => {}); server.close(() => process.exit(0)); }
 process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown);
