@@ -150,6 +150,14 @@ function normalizeWindow(w) {
   const used = w.usedPercent;
   return { usedPercent: typeof used === 'number' && Number.isFinite(used) ? Math.max(0, Math.min(100, used)) : null, windowDurationMins: typeof w.windowDurationMins === 'number' ? w.windowDurationMins : null, resetsAt: typeof w.resetsAt === 'number' && Number.isFinite(w.resetsAt) ? w.resetsAt : null };
 }
+async function subscriptionFromAuth(account) {
+  try {
+    const auth = JSON.parse(await readFile(join(profilePath(account.id), 'auth.json'), 'utf8'));
+    const jwt = auth.tokens?.id_token || auth.id_token;
+    const payload = JSON.parse(Buffer.from(jwt.split('.')[1], 'base64').toString());
+    return payload['https://api.openai.com/auth']?.chatgpt_subscription_active_until || null;
+  } catch { return null; }
+}
 function normalizedLimits(data) {
   const normalize = l => ({ primary: normalizeWindow(l?.primary), secondary: normalizeWindow(l?.secondary) });
   const buckets = Object.entries(data.rateLimitsByLimitId || {}).map(([key, l]) => ({ key, label: l.limitName || key, ...normalize(l) }));
@@ -228,6 +236,7 @@ async function clientFor(account) {
 async function syncAccount(account) {
   if (syncing.has(account.id)) return syncing.get(account.id);
   const task = (async () => {
+    const subscriptionUntil = await subscriptionFromAuth(account).catch(() => null);
     try {
       const client = await clientFor(account);
       const { account: identity } = await client.request('account/read', { refreshToken: false });
@@ -242,11 +251,12 @@ async function syncAccount(account) {
       }
       const data = await client.request('account/rateLimits/read');
       if (!state.accounts.includes(account)) return;
-      const before = JSON.stringify([account.email, account.plan, account.limits, account.buckets, account.error]);
-      Object.assign(account, normalizedLimits(data), { email, label: email || account.label, plan: identity.planType || 'ChatGPT', source: 'codex', connected: true, error: null, updatedAt: new Date().toISOString() });
-      if (JSON.stringify([account.email, account.plan, account.limits, account.buckets, account.error]) === before) return;
+      const before = JSON.stringify([account.email, account.plan, account.subscriptionUntil, account.limits, account.buckets, account.error]);
+      Object.assign(account, normalizedLimits(data), { email, label: email || account.label, plan: identity.planType || 'ChatGPT', source: 'codex', connected: true, error: null, updatedAt: new Date().toISOString(), subscriptionUntil });
+      if (JSON.stringify([account.email, account.plan, account.subscriptionUntil, account.limits, account.buckets, account.error]) === before) return;
     } catch (e) {
       if (state.accounts.includes(account)) account.error = message(e);
+      if (subscriptionUntil && !account.subscriptionUntil) account.subscriptionUntil = subscriptionUntil;
     }
     await save();
   })().finally(() => {
